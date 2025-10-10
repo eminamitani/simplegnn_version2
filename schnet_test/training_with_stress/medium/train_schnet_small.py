@@ -56,7 +56,7 @@ force_weight=torch.tensor(0.99).to(device)
 ene_weight=torch.tensor(0.01).to(device)
 stress_weight=torch.tensor(0.01).to(device)
 
-epochs=200
+epochs=500
 for epoch in range(epochs):
     loss_total=0
     loss_e_total=0
