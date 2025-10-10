@@ -218,13 +218,3 @@ class Painn(nn.Module):
             sigma = 0.5 * (sigma + sigma.T)
             
         return total_energy,forces, sigma
-
-class Painn_inference(nn.Module):
-    def __init__(self, model: Painn):
-        super(Painn_inference, self).__init__()
-        self.model = model
-
-    def forward(self, Z, edge_index, edge_weight, batch):
-        edge_weight.requires_grad = True
-        energy, forces, sigma = self.model(Z, edge_index, edge_weight, batch)
-        return energy, forces, sigma
