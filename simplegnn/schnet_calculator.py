@@ -1,10 +1,9 @@
 from ase.calculators.calculator import Calculator, all_changes
 import torch
 
-from gnn_mlp.preprocess import RadiusInteractionGraph
+from simplegnn.preprocess import RadiusInteractionGraph
 from torch_geometric.data import Data
-from torch.autograd.functional import hessian
-from torch_scatter import scatter_add
+
 
 def converter(atoms, cutoff):
     x = torch.tensor(atoms.numbers, dtype=torch.long)
