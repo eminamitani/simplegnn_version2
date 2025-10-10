@@ -1,9 +1,7 @@
 from ase.calculators.calculator import Calculator, all_changes
 import torch
 from torch_geometric.data import Data
-from torch.autograd.functional import hessian
-from torch_scatter import scatter_add
-from gnn_mlp.preprocess import RadiusInteractionGraph
+from simplegnn.preprocess import RadiusInteractionGraph
 
 def converter(atoms, cutoff):
     x = torch.tensor(atoms.numbers, dtype=torch.long)
@@ -28,20 +26,20 @@ class PainnCalculator(Calculator):
         self.cutoff = cutoff
         self.device = device
 
-    def calculate(self, atoms=None, properties=['energy'],
+    def calculate(self, atoms=None, properties=['energy','forces', 'stress'],
                   system_changes=all_changes):
         
         if self.calculation_required(atoms, properties):
             self.results = {}
             data = converter(atoms, self.cutoff)
             data=data.to(self.device)
-            data.edge_weight.requires_grad = True
-            #single atomic positions --> all in the same batch
-            data.batch=torch.zeros((len(data.x),), dtype=torch.long, device=self.device)
-
 
             # PaiNN model returns energy and forces
-            energy, forces = self.model(data.x, data.edge_index, data.edge_weight, data.batch)
-
-            self.results['energy'] = energy.to('cpu').item()
+            total_energy, forces, sigma = self.model(data.x, data.edge_index, data.edge_weight, batch=None)
+            self.results['energy'] = total_energy.to('cpu').item()
             self.results['forces'] = forces.to('cpu').detach().numpy()
+
+            # stress --> virial/volume : eV/A^3 
+            volume=atoms.get_volume()
+            stress_eV_per_A3 = -sigma.to('cpu').detach().numpy() / volume
+            self.results['stress'] = stress_eV_per_A3

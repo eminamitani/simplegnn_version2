@@ -200,9 +200,10 @@ class Painn(nn.Module):
         force_j=torch.scatter_add(force_j, 0, index_j.expand_as(diff_E), -diff_E)
 
         forces=force_i+force_j
-        batch_max = batch.max()
-        total_energy = torch.zeros(batch_max + 1, device=energy.device)
+
         if batch is not None:
+            batch_max = batch.max().item()
+            total_energy = torch.zeros(batch_max + 1, device=energy.device)
             total_energy = total_energy.index_add_(0, batch, energy.squeeze())
             sigma = torch.zeros((batch_max + 1, 3, 3), device=edge_weight.device)
             batch_edge = batch[edge_index[0]]  # edge_indexのi側の原子のバッチ情報
