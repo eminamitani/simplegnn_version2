@@ -213,46 +213,6 @@ class SchNetModel(nn.Module):
 
         return total_energy,forces,sigma
 
-import torch
-import torch.nn as nn
 
 
-class SchNet_inference(nn.Module):
-    def __init__(self, hidden_dim, num_gaussians, num_filters, num_interactions, cutoff, type_num=100):
-        super().__init__()
-        self.embedding = TypeEmbedding(type_num, hidden_dim)
-        self.rbf = GaussianRBF(num_gaussians, cutoff)
-        self.interactions = nn.ModuleList()
-        for _ in range(num_interactions):
-            block = InteractionBlock(hidden_dim, num_gaussians,
-                                     num_filters, cutoff)
-            self.interactions.append(block)
-        self.output = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            ShiftedSoftplus(),
-            nn.Linear(hidden_dim // 2, 1)
-        )
-
-    def forward(self, x, edge_index, edge_weight, batch=None):
-
-        h = self.embedding(x)
-
-        distances = torch.norm(edge_weight, dim=-1)
-        rbf_expansion = self.rbf(distances)
-
-        for interaction in self.interactions:
-            h = interaction(h, edge_index, edge_weight, rbf_expansion)
-
-        # 出力層
-        energy = self.output(h)
-
-
-        if batch is not None:
-            batch_max = batch.max()
-            total_energy = torch.zeros(batch_max + 1, device=energy.device)
-            total_energy = total_energy.index_add_(0, batch, energy.squeeze())
-        else:
-            total_energy = energy.sum()
-            
-        return total_energy
 
