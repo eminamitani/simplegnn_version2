@@ -186,7 +186,9 @@ class Painn(nn.Module):
         energy = self.output(node_scalar)
 
         # derivative with respect to edge_weight=rj-ri
-        diff_E = torch.autograd.grad(energy.sum(), edge_weight, create_graph=True)[0]
+        # Torchscript requires List[Tensor] 
+        diff_E = torch.autograd.grad([energy.sum()], [edge_weight], create_graph=True)[0]
+        assert diff_E is not None
         #p: pair, k,l: x,y,z
         # virial tensor for ij pair = r_ij (dE/d r_ij)
         sigma_ij = torch.einsum('pk,pl->pkl', edge_weight, diff_E)
@@ -202,7 +204,7 @@ class Painn(nn.Module):
         forces=force_i+force_j
 
         if batch is not None:
-            batch_max = batch.max().item()
+            batch_max = int(batch.max().item())
             total_energy = torch.zeros(batch_max + 1, device=energy.device)
             total_energy = total_energy.index_add_(0, batch, energy.squeeze())
             sigma = torch.zeros((batch_max + 1, 3, 3), device=edge_weight.device)
