@@ -120,7 +120,7 @@ class UpdateLayer(nn.Module):
             nn.SiLU(),
             nn.Linear(self.natom_basis, self.natom_basis*3),
         )
-        self.mu_chammel_mix=nn.Sequential(
+        self.mu_channel_mix=nn.Sequential( 
             nn.Linear(self.natom_basis, self.natom_basis*2),
         )
 
@@ -131,7 +131,7 @@ class UpdateLayer(nn.Module):
         q: scalar representation
         mu: vector representation
         """
-        mu_mix=self.mu_chammel_mix(mu)
+        mu_mix=self.mu_channel_mix(mu)
         mu_V,mu_W=torch.split(mu_mix, self.natom_basis, dim=-1)
         mu_Vn = torch.sqrt(torch.sum(mu_V**2, dim=-2, keepdim=False) + self.epsilon)
         
