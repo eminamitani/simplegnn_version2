@@ -27,6 +27,15 @@ class ChebyshevBasis(RadialBasis):
     def forward(self, r: torch.Tensor) -> torch.Tensor:
         return chebyshev_basis(r, self.num_basis, self.rc, self.normalize)
 
+# ---- 具体基底：Gaussian RBF ----
+class GaussianRBF(RadialBasis):
+    def __init__(self, num_basis: int, rc: float, start=0.0):
+        super().__init__(num_basis, rc)
+        self.register_buffer("offsets", torch.linspace(start, rc, num_basis))
+        self.register_buffer("widths", torch.full((num_basis,), rc / num_basis))
+
+    def forward(self, distances):
+        return gaussian_rbf(distances, self.offsets, self.widths)
 
 # ---- Envelope 抽象クラス ----
 class Envelope(nn.Module):
@@ -50,6 +59,36 @@ class PolyEnvelope(Envelope):
     def forward(self, r: torch.Tensor) -> torch.Tensor:
         return envelope_poly(r, self.rc).unsqueeze(-1) # (E,1)
 
+# ---- 具体エンベロープ：高次多項式 ----
+class HighOrderPolyCutoff(torch.nn.Module):
+    def __init__(self, rc: float, order: int = 3):
+        super().__init__()
+        if order < 1 or order > 5:
+            raise ValueError("order must be 1..5")
+        self.rc = rc
+        self.order = order
+
+    def forward(self, r: torch.Tensor) -> torch.Tensor:
+        t = (r / self.rc).clamp(0.0, 1.0)
+        s = smoothstep_poly(t, self.order)           # S_m(t) in [0,1]
+        fc = (1.0 - s) * (r < self.rc).to(r.dtype)   # f_cut = 1 - S, outside=0
+        return fc.unsqueeze(-1)
+    
+# ---- 具体エンベロープ：PolyGamma ----
+class PolyGammaEnvelope(Envelope):
+    def __init__(self, rc: float, gamma: float):
+        super().__init__(rc)
+        self.gamma = gamma
+    def forward(self, r: torch.Tensor) -> torch.Tensor:
+        return envelope_poly_gamma(r, self.rc, self.gamma).unsqueeze(-1) # (E,1)
+
+class FractionalEnvelope(Envelope):
+    def __init__(self, rc: float, h: float):
+        super().__init__(rc)
+        self.h = h
+    def forward(self, r: torch.Tensor) -> torch.Tensor:
+        return fractional_cutoff(r, self.rc, self.h).unsqueeze(-1) # (E,1)
+
 # ---- 何も掛けない（デバッグ用）----
 class IdentityEnvelope(Envelope):
     def __init__(self, rc: float):
@@ -69,17 +108,24 @@ def make_radial(name: str, num_basis: int, rc: float, **kw) -> RadialBasis:
         return SincBasis(num_basis, rc)
     elif name in ("cheby", "chebyshev"):
         return ChebyshevBasis(num_basis, rc, kw.get("normalize", True))
-
+    elif name in ("gauss", "gaussian", "gaussian_rbf"):
+        return GaussianRBF(num_basis, rc, kw.get("start", 0.0))
     else:
         raise ValueError(f"Unknown radial basis: {name}")
 
 
-def make_envelope(name: str, rc: float) -> Envelope:
+def make_envelope(name: str, rc: float, **kw) -> Envelope:
     name = name.lower()
     if name in ("cos", "cosine", "cosine_cutoff"):
         return CosineCutoff(rc)
     elif name in ("poly", "envelope_poly", "dimenet"):
         return PolyEnvelope(rc)
+    elif name in ("polygamma", "poly_gamma"):
+        return PolyGammaEnvelope(rc, gamma=kw.get("gamma", 2))
+    elif name in ("poly_high", "highorder", "smoothstep", "smootherstep"):
+        return HighOrderPolyCutoff(rc, order=kw.get("order", 3))
+    elif name in ("fractional", "fractional_cutoff"):
+        return FractionalEnvelope(rc, h=kw.get("h", 0.5))
     elif name in ("none", "identity"):
         return IdentityEnvelope(rc)
     else:
@@ -98,10 +144,15 @@ def sinc_expansion(edge_dist: torch.Tensor, edge_size: int, cutoff: float, eps: 
 @torch.jit.script
 def chebyshev_basis(r: torch.Tensor, num_basis: int, rc: float, normalize: bool = False) -> torch.Tensor:
     """
+    Chebyshev 多項式基底
+    https://journals.aps.org/prb/abstract/10.1103/PhysRevB.96.014112 
+    https://journals.aps.org/prmaterials/abstract/10.1103/PhysRevMaterials.4.040601
+
+
     r: (E,) 距離
     num_basis: 基底数 K
     rc: カットオフ
-    return: (E, K) で [T_0(x), T_1(x), ..., T_{K-1}(x)] * cutoff を返す
+    return: (E, K) で [T_0(x), T_1(x), ..., T_{K-1}(x)] を返す
     """
     # x in [-1, 1]
     x = 2.0 * r / rc - 1.0
@@ -132,6 +183,10 @@ def chebyshev_basis(r: torch.Tensor, num_basis: int, rc: float, normalize: bool 
 
     return B 
 
+def gaussian_rbf(inputs, offsets, widths):
+    coeff = -0.5 / widths**2
+    diff = inputs[..., None] - offsets
+    return torch.exp(coeff * diff**2)
 
 '''
 cutoff functions
@@ -159,4 +214,56 @@ def envelope_poly(r: torch.Tensor, rc: float) -> torch.Tensor:
     t = torch.clamp(r / rc, 0.0, 1.0)
     a0, a1, a2, a3 = 1.0, -3.0, 3.0, -1.0  # (1 - t)^3 に相当
     env = a0 + a1*t + a2*t*t + a3*t*t*t
+    return env * (r < rc).to(r.dtype)
+
+
+@torch.jit.script
+def smoothstep_poly(t: torch.Tensor, order: int) -> torch.Tensor:
+    """
+    S_order(t) on t in [0,1]. 係数は TorchScript 内で if/elif により定義。
+    order: 1..5 を想定
+    """
+    # 係数を Torch テンソルで作る（dtype/device を t に合わせる）
+    if order == 1:
+        coeffs = torch.tensor([0.0, 1.0], dtype=t.dtype, device=t.device)  # t
+    elif order == 2:
+        coeffs = torch.tensor([0.0, 0.0, 3.0, -2.0], dtype=t.dtype, device=t.device)  # 3t^2 - 2t^3
+    elif order == 3:
+        coeffs = torch.tensor([0.0, 0.0, 0.0, 10.0, -15.0, 6.0], dtype=t.dtype, device=t.device)  # 10t^3 -15t^4 +6t^5
+    elif order == 4:
+        coeffs = torch.tensor([0.0, 0.0, 0.0, 0.0, 35.0, -84.0, 70.0, -20.0],
+                              dtype=t.dtype, device=t.device)  # 35t^4 -84t^5 +70t^6 -20t^7
+    elif order == 5:
+        coeffs = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 126.0, -420.0, 540.0, -315.0, 70.0],
+                              dtype=t.dtype, device=t.device)  # 126t^5 -420t^6 + ...
+    else:
+        # TorchScriptでは ValueError より RuntimeError の方が扱いやすい
+        raise RuntimeError("smoothstep_poly: order must be in {1,2,3,4,5}")
+
+    # Horner 法で多項式評価： y = (...((c_n)*t + c_{n-1})*t + ... + c_0)
+    y = torch.zeros_like(t)
+    # 末尾（最高次）から前に向かって
+    for i in range(int(coeffs.numel()) - 1, -1, -1):
+        y = y * t + coeffs[i]
+    return y
+
+@torch.jit.script
+def envelope_poly_gamma(r: torch.Tensor, rc: float, gamma: float) -> torch.Tensor:
+    '''
+    Cosine cutoffではカットオフ半径付近であまりにもスムーズにしてしまい、
+    多体の相互作用を捉えにくくなる場合がある。
+    https://www.sciencedirect.com/science/article/pii/S0010465516301266?via%3Dihub
+    '''
+    t = torch.clamp(r / rc, 0.0, 1.0)
+    env=1+gamma*t**(gamma+1)-(1+gamma)*t**gamma
+    return env * (r < rc).to(r.dtype)
+
+@torch.jit.script
+def fractional_cutoff(r: torch.Tensor, rc: float, h: float) -> torch.Tensor:
+    '''
+    Fractional Cutoff function
+    https://journals.aps.org/prmaterials/abstract/10.1103/PhysRevMaterials.7.063605
+    '''
+    x= (r-rc)/h
+    env = x*x / (1 + x*x)
     return env * (r < rc).to(r.dtype)
