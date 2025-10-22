@@ -1,36 +1,6 @@
-
-'''
-radial basis function  
-'''
-
 import torch
 import torch.nn as nn
-
-
-def sinc_expansion(edge_dist: torch.Tensor, edge_size: int, cutoff: float):
-    """
-    calculate sinc radial basis function:
-    
-    sin(n *pi*d/d_cut)/d
-    """
-    n = torch.arange(edge_size, device=edge_dist.device) + 1
-    return torch.sin(edge_dist.unsqueeze(-1) * n * torch.pi / cutoff) / edge_dist.unsqueeze(-1)
-
-
-def cosine_cutoff(edge_dist: torch.Tensor, cutoff: float):
-    """
-    Calculate cutoff value based on distance.
-    This uses the cosine Behler-Parinello cutoff function:
-
-    f(d) = 0.5*(cos(pi*d/d_cut)+1) for d < d_cut and 0 otherwise
-    """
-    condition = (edge_dist < cutoff).to(edge_dist.device)  
-    return torch.where(
-        condition,
-        0.5 * (torch.cos(torch.pi * edge_dist / cutoff) + 1),
-        torch.tensor(0.0, device=edge_dist.device, dtype=edge_dist.dtype), 
-    )
-
+from simplegnn.util import make_radial, make_envelope
 
 class TypeEmbedding(nn.Module):
     """
@@ -45,11 +15,24 @@ class TypeEmbedding(nn.Module):
 
 class MessageLayer(nn.Module):
     #atomwise message passing
-    def __init__(self, natom_basis, n_radial, cutoff):
+    def __init__(self, natom_basis, n_radial, cutoff,
+                 radial_type: str='gaussian', 
+                 envelope_type:str='smoothstep',
+                 radial_kwargs: dict | None = None):
+        '''
+        natom_basis: embedding atom type dimension, dimension of scalar representation
+        n_radial: number of radial basis functions
+        cutoff: cutoff distance
+        radial_type: type of radial basis function
+        envelope_type: type of envelope function
+        '''
+
         super(MessageLayer, self).__init__()
         self.natom_basis=natom_basis
         self.n_radial=n_radial
         self.cutoff=cutoff
+        self.radial = make_radial(radial_type, n_radial, cutoff, **radial_kwargs)
+        self.envelope = make_envelope(envelope_type, cutoff)
         self.interaction_context_network=nn.Sequential(
             nn.Linear(self.natom_basis, natom_basis),
             nn.SiLU(),
@@ -70,8 +53,8 @@ class MessageLayer(nn.Module):
         distances=torch.norm(edge_weight, dim=-1)
         directions=edge_weight/distances.unsqueeze(-1)
         
-        basis_fn=sinc_expansion(distances, self.n_radial, self.cutoff)
-        cutoff=cosine_cutoff(distances, self.cutoff).unsqueeze(-1)
+        basis_fn=self.radial(distances)
+        cutoff=self.envelope(distances, self.cutoff)
         filter_Wij=self.filter_network(basis_fn)*cutoff
         
         idx_i=edge_index[0]

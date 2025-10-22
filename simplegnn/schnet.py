@@ -1,44 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from simplegnn.util import make_radial, make_envelope
 from math import pi as PI
 import numpy as np
 
-def scatter(src, index, dim=0, dim_size=None, reduce="add"):
-    if reduce not in ("add", "sum"):
-        raise NotImplementedError("reduce only supports add/sum in fallback")
-    out_shape = list(src.shape)
-    if dim_size is None:
-        dim_size = int(index.max().item()) + 1 if index.numel() > 0 else 0
-    out_shape[dim] = dim_size
-    out = torch.zeros(out_shape, dtype=src.dtype, device=src.device)
-    out.index_add_(dim, index, src)
-    return out
-
-# ==============================================================
-# ガウス基底関数の計算 (RBF)
-# ==============================================================
-def gaussian_rbf(inputs, offsets, widths):
-    coeff = -0.5 / widths**2
-    diff = inputs[..., None] - offsets
-    return torch.exp(coeff * diff**2)
-
-class GaussianRBF(nn.Module):
-    def __init__(self, n_rbf, cutoff, start=0.0):
-        super().__init__()
-        self.register_buffer("offsets", torch.linspace(start, cutoff, n_rbf))
-        self.register_buffer("widths", torch.full((n_rbf,), cutoff / n_rbf))
-
-    def forward(self, distances):
-        return gaussian_rbf(distances, self.offsets, self.widths)
-
-# ==============================================================
-# カットオフ関数
-# ==============================================================
-def cutoff_function(distances, cutoff):
-    C = 0.5 * (torch.cos(distances * PI / cutoff) + 1.0)
-    C[distances > cutoff] = 0.0
-    return C
 
 # ==============================================================
 # 原子種を埋め込みベクトルに変換
@@ -62,14 +28,16 @@ class ShiftedSoftplus(nn.Module):
 # ==============================================================
 # 相互作用ブロック (Interaction Block)
 class InteractionBlock(nn.Module):
-    def __init__(self, hidden_dim, num_gaussians, num_filters, cutoff):
+    def __init__(self, hidden_dim, n_radial, num_filters, cutoff,
+                 envelope_type:str='smoothstep'):
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(num_gaussians, num_filters),
+            nn.Linear(n_radial, num_filters),
             ShiftedSoftplus(),
             nn.Linear(num_filters, num_filters),
         )
         self.cutoff = cutoff
+        self.envelope = make_envelope(envelope_type, cutoff)
         self.lin1 = nn.Linear(hidden_dim, num_filters, bias=False)
         self.lin2 = nn.Linear(num_filters, hidden_dim)
         self.act = ShiftedSoftplus()
@@ -78,10 +46,10 @@ class InteractionBlock(nn.Module):
 
         # 原子間距離の計算
         distances = torch.norm(edge_weight, dim=-1)  # 原子間距離 (num_edges,)
-        C = cutoff_function(distances, self.cutoff)  # カットオフ関数 (num_edges,)
+        envelope = self.envelope(distances)  # カットオフ関数 (num_edges,)
         
         # フィルター重みの計算
-        W = self.mlp(edge_attr) * C.unsqueeze(-1)  # (num_edges, num_filters)
+        W = self.mlp(edge_attr) * envelope  # (num_edges, num_filters)
 
         # メッセージ生成
         i, j = edge_index  # edge_index (2, num_edges)
@@ -105,9 +73,9 @@ class InteractionBlock(nn.Module):
 
 
 class SchNet_dict():
-    def __init__(self, hidden_dim, num_gaussians, num_filters, num_interactions, cutoff, type_num=100):
+    def __init__(self, hidden_dim, n_radial, num_filters, num_interactions, cutoff, type_num=100):
         self.hidden_dim = hidden_dim
-        self.num_gaussians = num_gaussians
+        self.n_radial = n_radial
         self.num_filters = num_filters
         self.num_interactions = num_interactions
         self.cutoff = cutoff
@@ -116,7 +84,7 @@ class SchNet_dict():
     def to_dict(self):
         return {
             "hidden_dim": self.hidden_dim,
-            "num_gaussians": self.num_gaussians,
+            "n_radial": self.n_radial,
             "num_filters": self.num_filters,
             "num_interactions": self.num_interactions,
             "cutoff": self.cutoff,
@@ -130,15 +98,19 @@ class SchNet_dict():
 class SchNetModel(nn.Module):
 
 
-    def __init__(self, hidden_dim, num_gaussians, num_filters, num_interactions, cutoff, type_num=100):
+    def __init__(self, hidden_dim, n_radial, num_filters, 
+                 num_interactions, cutoff, type_num=100,
+                 radial_type='gaussian',
+                 radial_kwargs={}):
         super().__init__()
-
-        self.setups=SchNet_dict(hidden_dim, num_gaussians, num_filters, num_interactions, cutoff, type_num)
+        self.cutoff=cutoff
+        self.setups=SchNet_dict(hidden_dim, n_radial, num_filters, num_interactions, cutoff, type_num)
         self.embedding = TypeEmbedding(type_num, hidden_dim)
-        self.rbf = GaussianRBF(num_gaussians, cutoff)
+        self.radial= make_radial(radial_type, n_radial, cutoff, **radial_kwargs)
+
         self.interactions = nn.ModuleList()
         for _ in range(num_interactions):
-            block = InteractionBlock(hidden_dim, num_gaussians,
+            block = InteractionBlock(hidden_dim, n_radial,
                                      num_filters, cutoff)
             self.interactions.append(block)
         self.output = nn.Sequential(
@@ -158,9 +130,9 @@ class SchNetModel(nn.Module):
 
         #print("embedding:",h.shape)
 
-        # RBF展開
+        # basis functionの計算
         distances = torch.norm(edge_weight, dim=-1)
-        rbf_expansion = self.rbf(distances)
+        rbf_expansion = self.radial(distances)
         #print("rbf:",rbf_expansion.shape)
 
         # 相互作用ブロックを適用
