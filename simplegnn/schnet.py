@@ -36,7 +36,6 @@ class InteractionBlock(nn.Module):
             ShiftedSoftplus(),
             nn.Linear(num_filters, num_filters),
         )
-        self.cutoff = cutoff
         self.envelope = make_envelope(envelope_type, cutoff)
         self.lin1 = nn.Linear(hidden_dim, num_filters, bias=False)
         self.lin2 = nn.Linear(num_filters, hidden_dim)
@@ -73,13 +72,18 @@ class InteractionBlock(nn.Module):
 
 
 class SchNet_dict():
-    def __init__(self, hidden_dim, n_radial, num_filters, num_interactions, cutoff, type_num=100):
+    def __init__(self, hidden_dim, n_radial, num_filters, 
+                 num_interactions, cutoff, type_num=100,
+                 radial_type='gaussian',
+                 envelope_type='smoothstep'):
         self.hidden_dim = hidden_dim
         self.n_radial = n_radial
         self.num_filters = num_filters
         self.num_interactions = num_interactions
         self.cutoff = cutoff
         self.type_num = type_num
+        self.radial_type = radial_type
+        self.envelope_type = envelope_type
 
     def to_dict(self):
         return {
@@ -88,7 +92,9 @@ class SchNet_dict():
             "num_filters": self.num_filters,
             "num_interactions": self.num_interactions,
             "cutoff": self.cutoff,
-            "type_num": self.type_num
+            "type_num": self.type_num,
+            "radial_type": self.radial_type,
+            "envelope_type": self.envelope_type
         }
 
     @classmethod
@@ -101,6 +107,7 @@ class SchNetModel(nn.Module):
     def __init__(self, hidden_dim, n_radial, num_filters, 
                  num_interactions, cutoff, type_num=100,
                  radial_type='gaussian',
+                 envelope_type='smoothstep',
                  radial_kwargs={}):
         super().__init__()
         self.cutoff=cutoff
@@ -111,7 +118,7 @@ class SchNetModel(nn.Module):
         self.interactions = nn.ModuleList()
         for _ in range(num_interactions):
             block = InteractionBlock(hidden_dim, n_radial,
-                                     num_filters, cutoff)
+                                     num_filters, cutoff,envelope_type=envelope_type)
             self.interactions.append(block)
         self.output = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),

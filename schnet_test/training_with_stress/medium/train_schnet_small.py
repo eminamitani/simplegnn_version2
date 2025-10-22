@@ -37,8 +37,9 @@ hidden_dim=100
 num_interactions=3
 num_filters=100
 
-model = SchNetModel(hidden_dim=hidden_dim, num_gaussians=num_gaussians, 
-                    num_filters=num_filters, num_interactions=num_interactions, cutoff=cutoff)
+model = SchNetModel(hidden_dim=hidden_dim, n_radial=num_gaussians, 
+                    num_filters=num_filters, num_interactions=num_interactions, cutoff=cutoff,
+                    radial_type='gaussian', envelope_type='smoothstep')
 model=model.to(device)
 
 

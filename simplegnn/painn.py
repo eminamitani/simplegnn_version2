@@ -31,6 +31,7 @@ class MessageLayer(nn.Module):
         self.natom_basis=natom_basis
         self.n_radial=n_radial
         self.cutoff=cutoff
+        radial_kwargs = radial_kwargs or {}
         self.radial = make_radial(radial_type, n_radial, cutoff, **radial_kwargs)
         self.envelope = make_envelope(envelope_type, cutoff)
         self.interaction_context_network=nn.Sequential(
@@ -54,7 +55,7 @@ class MessageLayer(nn.Module):
         directions=edge_weight/distances.unsqueeze(-1)
         
         basis_fn=self.radial(distances)
-        cutoff=self.envelope(distances, self.cutoff)
+        cutoff=self.envelope(distances)
         filter_Wij=self.filter_network(basis_fn)*cutoff
         
         idx_i=edge_index[0]
@@ -132,7 +133,11 @@ class UpdateLayer(nn.Module):
         return q,mu
 
 class Painn(nn.Module):
-    def __init__(self, natom_basis, n_radial, cutoff, epsilon, num_interactions):
+    def __init__(self, natom_basis, n_radial, cutoff, epsilon, num_interactions,
+                 radial_type: str='gaussian', 
+                 envelope_type:str='smoothstep',
+                 radial_kwargs: dict | None = None):
+        
         super(Painn, self).__init__()
         self.natom_basis=natom_basis
         self.n_radial=n_radial
@@ -140,10 +145,15 @@ class Painn(nn.Module):
         self.epsilon=epsilon
         self.embedding=TypeEmbedding(100, self.natom_basis)
         self.num_interactions=num_interactions
+        self.radial_type=radial_type
+        self.envelope_type=envelope_type
+        self.radial_kwargs=radial_kwargs or {}
+        
 
         self.message_layers = nn.ModuleList()
         for _ in range(self.num_interactions):
-            block = MessageLayer(self.natom_basis, self.n_radial, self.cutoff)
+            block = MessageLayer(self.natom_basis, self.n_radial, self.cutoff, 
+                                 self.radial_type,self.envelope_type, self.radial_kwargs)
             self.message_layers.append(block)
         
         self.mixing_layers=nn.ModuleList()
