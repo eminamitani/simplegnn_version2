@@ -86,7 +86,7 @@ def ConvertAtomsListToDataList(atoms_list, cutoff, include_virial=False):
                 edge_index=edge_index,
                 edge_weight=edge_weight,  # Enable gradient tracking
                 pos=torch.tensor(atoms.positions, dtype=torch.float32),
-                forces=torch.tensor(atoms.get_array('force'), dtype=torch.float32),
+                forces=torch.tensor(atoms.get_forces(), dtype=torch.float32),
                 y=torch.tensor(atoms.get_potential_energy(), dtype=torch.float32)
             )
         else:
@@ -95,7 +95,7 @@ def ConvertAtomsListToDataList(atoms_list, cutoff, include_virial=False):
                 edge_index=edge_index,
                 edge_weight=edge_weight,  # Enable gradient tracking
                 pos=torch.tensor(atoms.positions, dtype=torch.float32),
-                forces=torch.tensor(atoms.get_array('force'), dtype=torch.float32),
+                forces=torch.tensor(atoms.get_forces(), dtype=torch.float32),
                 y=torch.tensor(atoms.get_potential_energy(), dtype=torch.float32),
                 stress=torch.tensor(atoms.info['virial'], dtype=torch.float32)
             )
